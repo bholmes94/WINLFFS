@@ -234,6 +234,7 @@ static NTSTATUS DOKAN_CALLBACK LFFSZwCreateFile(
 		return STATUS_SUCCESS;
 	}*/
 	else {
+		DokanFileInfo->IsDirectory = FALSE;
 		return STATUS_SUCCESS;
 	}
 }
@@ -252,38 +253,45 @@ static NTSTATUS DOKAN_CALLBACK LFFSGetFileInformation(LPCWSTR FileName,
 
 	fprintf(stderr, L"[!] GetFileInformation called on %s\n", FileName);
 
+	/*
+	 * There are three scenarios which are dealt with here:
+	 *		1) The FileName is just the root directory. In which case, set the attributes
+	 *		   to be a directory and as per the DOKAN documentation, set the flag for
+	 *		   FILE_FLAG_BACKUP_SEMANTICS
+	 *		
+	 *		2) The FileName already is in the directory and in use. In which case, we use
+	 *		   the FindFile function to check where it is and gather it's information such
+	 *		   as the size. Then we'll use general file attributes.
+	 *
+	 *		2) The FileName needs to be created. In this case, we give it general attribs
+	 *		   and set the file size to 0 for LFFSSetEndOfFile to actually deal with. If 
+	 *		   that is called prior to gathering file info, we should change it!
+	 *
+	 * Otherwise, we can just return an error as the file can't be added since the filename
+	 * is larger than the 16 byte limit.
+	 *
+	 */
 	if (lstrcmpW(FileName, L"\\") == 0) {
 		/* only dealing with the root dir here */
 		Buffer->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY | FILE_FLAG_BACKUP_SEMANTICS;
 		return STATUS_SUCCESS;
 	}
-	/*else if (lstrcmpW(FileName, L"\\testfile.txt") == 0) {
-		fwprintf(stderr, L"[!] LFFSGetFileInformation on %s", FileName);
-
-		/* setting up generic attributes */
-		/*Buffer->dwFileAttributes |= FILE_ATTRIBUTE_NORMAL;
-		Buffer->nFileSizeHigh = 0;
-		Buffer->nFileSizeLow = ((HEAD->end - HEAD->start) * 512) + HEAD->off;
-
-		return STATUS_SUCCESS;
-	} 
-
-	/* second condition to test file addition */
-	/*else if(lstrcmpW(FileName, L"\\file2.iso") == 0) {
-		fwprintf(stderr, "[!] LFFSGetFileInformation called on the new file\n");
-		Buffer->dwFileAttributes |= FILE_ATTRIBUTE_NORMAL;
-		Buffer->nFileSizeHigh = 0;
-		Buffer->nFileSizeLow = 0;
-		return STATUS_SUCCESS;
-	}*/ 
-
 	else if (FindFile(FileName) == 0) {
 		Buffer->dwFileAttributes |= FILE_ATTRIBUTE_NORMAL;
 		Buffer->nFileSizeHigh = 0;
 		Buffer->nFileSizeLow = ((FFRESULT->end - FFRESULT->start) * 512) + FFRESULT->off;
 		fprintf(stderr, "[+] File Found!\t%s\n", FFRESULT->filename);
-	} else {
-		fprintf(stderr, "[-] No file info to show\n");
+		return STATUS_SUCCESS;
+	}
+	else if (strlen(FileName) <= 32){
+		fprintf(stderr, "[+] valid filename size. %d bytes long\n", strlen(FileName));
+		Buffer->dwFileAttributes |= FILE_ATTRIBUTE_NORMAL;
+		Buffer->nFileSizeHigh = 0;
+		Buffer->nFileSizeLow = 0;
+		return STATUS_SUCCESS;
+	}
+	else {
+		fprintf(stderr, "[-] ERROR: Filename exceeds maximum of 16 bytes\n");
 		return STATUS_FILE_NOT_AVAILABLE;
 	}
 }
@@ -319,15 +327,31 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 		fileSize = (HEAD->start - HEAD->end) + HEAD->off;						// calculated bytes to write
 		fwprintf(stderr, L"\tfilesize calculated at %lf byte(s)\n", fileSize);	// more debugging
 		
+		memset(Buffer, 0, sizeof(Buffer));
 
 		/* retrieving data */
 		char *retrieveData;
 
-		/* temp check to make sure we can fit file into buffer */
-		retrieveData = (char *)malloc(BufferLength);
-		SetFilePointer(dataHandle, dataLocation, 0, FILE_BEGIN);
-		ReadFile(dataHandle, retrieveData, BufferLength, NULL, NULL);
-		fprintf(stderr, "Size of data retrieved %s\n", retrieveData);
+		/* 
+		 * temp check to make sure we can fit file into buffer. Note 
+		 * that when copying, the buffer will NOT be a multiple of 
+		 * or above 512 on occasion. So we must use a 512byte buffer
+		 * in these cases to ensure a proper read. Still could be 
+		 * different depending on how large files are copied.
+		 */
+		if (BufferLength < 512) {
+			retrieveData = (char *)malloc(512);				// for the copying, read buffer.
+			SetFilePointer(dataHandle, dataLocation, 0, FILE_BEGIN);
+			ReadFile(dataHandle, retrieveData, 512, NULL, NULL);
+			fprintf(stderr, "Size of data retrieved %s\n", retrieveData);
+		}
+		else {
+			retrieveData = (char *)malloc(BufferLength);
+			SetFilePointer(dataHandle, dataLocation, 0, FILE_BEGIN);
+			ReadFile(dataHandle, retrieveData, BufferLength, NULL, NULL);
+			fprintf(stderr, "Size of data retrieved %s\n", retrieveData);
+		}
+
 
 		/* moving data to buffer and modifying values */
 		memcpy_s(Buffer, BufferLength, retrieveData, BufferLength);		//use this since it doesn't add a space (null term)
@@ -372,6 +396,13 @@ static NTSTATUS DOKAN_CALLBACK LFFSMounted(PDOKAN_FILE_INFO DokanFileInfo)
 	return STATUS_SUCCESS;
 }
 
+static NTSTATUS DOKAN_CALLBACK LFFSFindStreams(LPWSTR FileName, PFillFindStreamData
+	FillFindStreamData, PDOKAN_FILE_INFO DokanFileInfo)
+{
+	fprintf(stderr, "[?] LFFSFindStreams is called...\n");
+	return STATUS_SUCCESS;
+}
+
 static NTSTATUS DOKAN_CALLBACK LFFSFindFiles(LPCWSTR FileName, PFillFindData ffd, PDOKAN_FILE_INFO DokanFileInfo)
 {
 	PWIN32_FIND_DATA findData = (PWIN32_FIND_DATA)malloc(sizeof(PWIN32_FIND_DATA));
@@ -380,25 +411,24 @@ static NTSTATUS DOKAN_CALLBACK LFFSFindFiles(LPCWSTR FileName, PFillFindData ffd
 	int i;
 
 	tmp = HEAD;
-	/*for (i = 0; i < ENTRIES; i++) {
-		fprintf(stderr, "[+] Listing filename %s\n", tmp->filename);
-		mbstowcs_s(NULL, namebuf, 50, tmp->filename, 16);
-		wcscpy_s(findData->cFileName, sizeof(namebuf), namebuf);
-		findData->nFileSizeHigh = 0;
-		findData->nFileSizeLow = ((HEAD->end - HEAD->start) * 512) + HEAD->off;
-		fprintf(stderr, "filesize is %d\n", findData->nFileSizeLow);
-		ffd(findData, DokanFileInfo);
-		tmp = tmp->next;
-	}*/
 
 	/* test for handling one file */
-	fprintf(stderr, "[!] Listing filename %s\n", HEAD->filename);	// debugging
+/*	fprintf(stderr, "[!] Listing filename %s\n", HEAD->filename);	// debugging
 	mbstowcs_s(NULL, namebuf, 50, tmp->filename, 16);				// convert char array to wchar_t array
 	wcscpy_s(findData->cFileName, sizeof(namebuf), namebuf);		// copy filename to struct for file listing
 	findData->nFileSizeHigh = 0;									// high order set to zero for testing purposes (only small files)
 	findData->nFileSizeLow = (tmp->end - tmp->start) + tmp->off;	// calculates and sets the low order value
 	ffd(findData, DokanFileInfo);									// uses function pointer to return data to Dokan
-
+	*/
+	for (i = 0; i < ENTRIES; i++) {
+		fprintf(stderr, "[!] Listing filename %s\n", tmp->filename);	// debugging
+		mbstowcs_s(NULL, namebuf, 50, tmp->filename, 16);				// convert char array to wchar_t array
+		wcscpy_s(findData->cFileName, sizeof(namebuf), namebuf);		// copy filename to struct for file listing
+		findData->nFileSizeHigh = 0;									// high order set to zero for testing purposes (only small files)
+		findData->nFileSizeLow = (tmp->end - tmp->start) + tmp->off;	// calculates and sets the low order value
+		ffd(findData, DokanFileInfo);									// uses function pointer to return data to Dokan
+		tmp = tmp->next;
+	}
 
 
 	free(findData);
@@ -524,7 +554,6 @@ int main()
 	dokanOptions->MountPoint = L"E";
 	/* seems to cause some issues if uncommented. Not sure why. */
 	//dokanOptions->Options = DOKAN_OPTION_DEBUG | DOKAN_OPTION_STDERR;
-	//dokanOptions->Options = DOKAN_OPTIONS
 	dokanOptions->Version = DOKAN_VERSION;
 	dokanOptions->ThreadCount = 1;
 
@@ -546,6 +575,7 @@ int main()
 	dokanOperations->SetAllocationSize = LFFSSetAllocationSize;
 	dokanOperations->SetFileTime = LFFSSetFileTime;
 	dokanOperations->SetEndOfFile = LFFSSetEndOfFile;
+	dokanOperations->FindStreams = LFFSFindStreams;
 
 	printf("Handing off to DOKAN\n");
 	int status = DokanMain(dokanOptions, dokanOperations);

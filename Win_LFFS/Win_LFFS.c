@@ -171,6 +171,41 @@ static int FindFile(LPWSTR FileName) {
 	return 1;
 }
 
+/*
+ * Function that takes in a pointer to a file which has not yet been added
+ * to the directory and it's corresponding filesize. It must then create a
+ * new struct and calculate the space needed to write to the data section
+ * of the storage medium.
+ *
+ * @param FileName	- long pointer to the wide string of the filename
+ * @param FileSize	- size of file to be allocated
+ *
+ */
+static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
+{
+	int CalcStart, CalcEnd, CalcSize, CalcOff;
+
+	fwprintf(stderr, L"[+] CreateNewDirectoryEntry\n"
+		L"\tFile to create:\t%s\n"
+		L"\tFile space needed:\t%ld\n"
+		,FileName, FileSize);
+
+	/* create struct */
+	struct entry *NewFile = (struct entry*) malloc(sizeof(struct entry));
+
+	/* calculate space needed */
+	CalcOff = FileSize % BLOCKSIZE;
+	if (CalcOff > 0) CalcSize = (FileSize / BLOCKSIZE) + 1;
+	else CalcSize = FileSize / BLOCKSIZE;
+
+	fwprintf(stderr, L"[!] Directory Creation Info\n"
+		L"\tOffset:\t\t%d\n"
+		L"\tSize in Blocks:\t%d\n"
+		,CalcOff, CalcSize);
+
+	return 0;
+}
+
 static NTSTATUS DOKAN_CALLBACK LFFSGetVolumeInformation(LPWSTR VolumeNameBuffer,
 	DWORD VolumeNameSize, LPDWORD VolumeSerialNumber,
 	LPDWORD MaximumComponentLength, LPDWORD FileSystemFlags,
@@ -365,7 +400,9 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 
 /*
  * DOKAN API Callback that takes a buffer filled with data and has to write that data to
- * the filesystem. 
+ * the filesystem. Also has to update the total file size. As each piece is written, the
+ * file size will increase. Since this file is being written at the end of the array, we
+ * can assume the only limiting case is if the storage medium is out of space.
  */
 static NTSTATUS DOKAN_CALLBACK LFFSWriteFile(LPCWSTR FileName, LPCVOID Buffer,
 	DWORD NumberOfBytesToWrite, LPDWORD NumberOfBytesWritten,
@@ -376,6 +413,17 @@ static NTSTATUS DOKAN_CALLBACK LFFSWriteFile(LPCWSTR FileName, LPCVOID Buffer,
 		L"\tbytes to write\t%d\n"
 		L"\toffset\t%d\n",
 		FileName, NumberOfBytesToWrite, Offset);
+	
+	/* want to create the struct on the initial call. If Offset == 0, no previous calls made */
+	if (Offset == 0) {
+		// create new directory struct, make a function
+		fwprintf(stderr, L"[!] New file found, entry needed\t%s\n", FileName);
+	}
+	else {
+		// need to update the file size
+		fwprintf(stderr, "[+] Need to update filesize for %s\n", FileName);
+	}
+
 	return STATUS_SUCCESS;
 }
 
@@ -459,7 +507,9 @@ static NTSTATUS DOKAN_CALLBACK LFFSSetFileTime(LPCWSTR FileName, CONST FILETIME
 }
 
 /*
- * DOKAN API Callback for truncating or extending the file size.
+ * DOKAN API Callback for truncating or extending the file size. Since this is called 
+ * before the actual write call, this should call the function to create a new file
+ * entry struct.
  *
  * @param FileName		- file path requested
  * @param ByteOffset	- file length to set
@@ -472,6 +522,10 @@ static NTSTATUS DOKAN_CALLBACK LFFSSetEndOfFile(LPCWSTR FileName, LONGLONG ByteO
 		"\tfilename\t%s\n"
 		"\tnew size\t%d\n"
 		, FileName, ByteOffset);
+
+	/* call to create new struct */
+	CreateNewDirectoryEntry(FileName, ByteOffset);
+
 	return STATUS_SUCCESS;
 }
 

@@ -183,7 +183,14 @@ static int FindFile(LPWSTR FileName) {
  */
 static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 {
-	int CalcStart, CalcEnd, CalcSize, CalcOff;
+	int CalcStart, CalcEnd, CalcSize, CalcOff, WriteLocation;
+	struct entry *tmp;
+	char wrbuf[512];	// separate buffer for writing to fs
+	char start[12];		// start block buffer
+	char end[12];		// end block buffer
+	char off[12];		// offset buffer for last block
+	wchar_t *cpy[64];
+	char filename[16];
 
 	fwprintf(stderr, L"[+] CreateNewDirectoryEntry\n"
 		L"\tFile to create:\t%s\n"
@@ -197,11 +204,101 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	CalcOff = FileSize % BLOCKSIZE;
 	if (CalcOff > 0) CalcSize = (FileSize / BLOCKSIZE) + 1;
 	else CalcSize = FileSize / BLOCKSIZE;
+	tmp = NULL;
+	
+	/*
+	 * Need to be careful here. If the file is the first one, we
+	 * must treat it differently since there is no last added file
+	 * to base calculations on.
+	 */
 
-	fwprintf(stderr, L"[!] Directory Creation Info\n"
-		L"\tOffset:\t\t%d\n"
-		L"\tSize in Blocks:\t%d\n"
-		,CalcOff, CalcSize);
+	if (ENTRIES == 0) {
+		//TODO: Add this 
+	}
+	else {
+		// otherwise, we can base off of last item
+		int i;
+		tmp = HEAD;
+
+		for (i = 0; i < ENTRIES-1; i++) tmp = tmp->next;
+		fprintf(stderr, "[+] Found last file\t%s\n\tlocation:\t%d\n", tmp->filename, tmp->start);
+
+		/* calculate data locations */
+		tmp->next = NewFile;
+		NewFile->start = tmp->end + 1;
+		NewFile->end = tmp->end + CalcSize;
+		NewFile->off = CalcOff;
+		//strcpy_s(NewFile->filename, 16, filename + 1);
+
+		wcstombs_s(NULL, filename, 16, FileName, 32);
+
+		for (i = 0; i < 16; i++) {
+			filename[i] = filename[i + 1];
+		}
+
+		fprintf(stderr, "[!] %s\n", filename);
+		strcpy_s(NewFile->filename, 16, filename);
+	}
+
+	/* some debugging output */
+	fprintf(stderr, "[!] Directory Creation Info on %s\n"
+		"\tOffset:\t\t%d\n"
+		"\tSize in Blocks:\t%d\n"
+		"\tStart Block:\t%d\n"
+		"\tEnd Block:\t%d\n"
+		, NewFile->filename, NewFile->off, (NewFile->end - NewFile->start) + 1, NewFile ->start, NewFile->end);
+
+	/* now we need to update the directory block */
+	WriteLocation = 10 + (ENTRIES * 41);
+	sprintf_s(start, 11, "%d", tmp->end + 1);
+	sprintf_s(end, 11, "%d", NewFile->end);
+	sprintf_s(off, 3, "%d", NewFile->off);				/* offset is just the remainder of the size/512 */
+
+	printf("[!] File Info To Write:\n"
+		"\tstart\t%s\n"
+		"\tend\t%s\n"
+		"\toff\t%s\n"
+		, start, end, off);
+
+	/*
+	* NOTE: all write functions are to memory, NOT the drive. there is a
+	* separate function to flush the directory to the drive.
+	*/
+	int i;
+	for (i = 0; i < strlen(NewFile->filename) + 1; i++) {
+		block[WriteLocation + i] = NewFile->filename[i];
+	}
+	NewFile->filename[17] = '\0';
+	printf("*BEGINNING DIRECTORY WRITE*");
+	// writes start block to directory
+	for (i = 0; i < strlen(start) + 1; i++) {
+		block[WriteLocation + 16 + i] = start[i];
+	}
+
+	printf("\n\tStart Location Writen\n");
+
+	// writes end block to directory
+	for (i = 0; i < strlen(end) + 1; i++) {
+		block[WriteLocation + 27 + i] = end[i];
+	}
+
+	printf("\n\tEnd Location Writen\n");
+
+	// writes offset to directory
+	for (i = 0; i < strlen(off); i++) {
+		block[WriteLocation + 38 + i] = off[i];
+	}
+
+	printf("\n\tOffset Amnt Writen\n");
+
+	// update entry count, write to directory
+	ENTRIES++;
+	block[0] = ENTRIES + '0';
+
+	// debugging print directory
+	for (i = WriteLocation; i < WriteLocation + 41; i++) {
+		printf("%c", block[i]);
+	}
 
 	return 0;
 }
@@ -470,17 +567,18 @@ static NTSTATUS DOKAN_CALLBACK LFFSFindFiles(LPCWSTR FileName, PFillFindData ffd
 	*/
 	for (i = 0; i < ENTRIES; i++) {
 		fprintf(stderr, "[!] Listing filename %s\n", tmp->filename);	// debugging
-		mbstowcs_s(NULL, namebuf, 50, tmp->filename, 16);				// convert char array to wchar_t array
+		mbstowcs_s(NULL, namebuf, 64, tmp->filename, 32);				// convert char array to wchar_t array
 		wcscpy_s(findData->cFileName, sizeof(namebuf), namebuf);		// copy filename to struct for file listing
 		findData->nFileSizeHigh = 0;									// high order set to zero for testing purposes (only small files)
 		findData->nFileSizeLow = (tmp->end - tmp->start) + tmp->off;	// calculates and sets the low order value
 		ffd(findData, DokanFileInfo);									// uses function pointer to return data to Dokan
-		tmp = tmp->next;
+		if(tmp->next != NULL) tmp = tmp->next;
+		else break;
 	}
 
 
 	free(findData);
-
+	fprintf(stderr, "AFter\n");
 	return STATUS_SUCCESS;
 }
 
@@ -525,6 +623,9 @@ static NTSTATUS DOKAN_CALLBACK LFFSSetEndOfFile(LPCWSTR FileName, LONGLONG ByteO
 
 	/* call to create new struct */
 	CreateNewDirectoryEntry(FileName, ByteOffset);
+
+	/* if the new file is there, update ENTRIES */
+	if (FindFile(FileName) == 0) ENTRIES++;				//NOTE: Need to write to storage still
 
 	return STATUS_SUCCESS;
 }
@@ -607,7 +708,7 @@ int main()
 
 	dokanOptions->MountPoint = L"E";
 	/* seems to cause some issues if uncommented. Not sure why. */
-	//dokanOptions->Options = DOKAN_OPTION_DEBUG | DOKAN_OPTION_STDERR;
+	dokanOptions->Options = DOKAN_OPTION_DEBUG | DOKAN_OPTION_STDERR;
 	dokanOptions->Version = DOKAN_VERSION;
 	dokanOptions->ThreadCount = 1;
 

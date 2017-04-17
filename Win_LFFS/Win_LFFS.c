@@ -151,7 +151,7 @@ static int FindFile(LPWSTR FileName) {
 	wchar_t ConvertedExisting[50];
 	struct entry *tmp;
 
-	fwprintf(stderr, L"[!] FindFile for %s\n", CleanFileName);
+	fwprintf(stderr, L"[!] FindFile for %s\n\tEntry Count:\t%d\n", CleanFileName, ENTRIES);
 
 	tmp = HEAD;
 	int i = 0;
@@ -189,6 +189,8 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	char start[12];		// start block buffer
 	char end[12];		// end block buffer
 	char off[12];		// offset buffer for last block
+	wchar_t *name = L"\\yoda.pdf";
+	LPWSTR pName = name;
 	wchar_t *cpy[64];
 	char filename[16];
 
@@ -290,8 +292,6 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	}
 
 	printf("\n\tOffset Amnt Writen\n");
-
-	// update entry count, write to directory
 	ENTRIES++;
 	block[0] = ENTRIES + '0';
 
@@ -299,6 +299,10 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	for (i = WriteLocation; i < WriteLocation + 41; i++) {
 		printf("%c", block[i]);
 	}
+
+	/* rewrite updated directory */
+	SetFilePointer(dataHandle, 0, 0, FILE_BEGIN);
+	//if (!WriteFile(dataHandle, block, BLOCKSIZE, NULL, NULL)) fprintf(stderr, "[!] ERROR re-writing directory\n");
 
 	return 0;
 }
@@ -446,7 +450,7 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 {
 	double dataLocation, fileSize;
 
-	if (lstrcmpW(FileName, L"\\testfile.txt") == 0) {
+	if (FindFile(FileName) == 0) {
 		fwprintf(stderr, L"[!] Read called on %s.\n"
 			L"\tBufferLength:\t%d\n"
 			L"\tReadLength:\t%d\n"
@@ -454,9 +458,9 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 			, FileName, BufferLength, *ReadLength, Offset);
 
 		/* calculates location of data in memory */
-		dataLocation = HEAD->start * 512;										// normally would find file, but only one for now
+		dataLocation = (FFRESULT->start - 1) * 512;										// normally would find file, but only one for now
 		fwprintf(stderr, L"\tdata begin location %lf\n", dataLocation);			// debugging 
-		fileSize = (HEAD->start - HEAD->end) + HEAD->off;						// calculated bytes to write
+		fileSize = (FFRESULT->start - FFRESULT->end) + FFRESULT->off;						// calculated bytes to write
 		fwprintf(stderr, L"\tfilesize calculated at %lf byte(s)\n", fileSize);	// more debugging
 		
 		memset(Buffer, 0, sizeof(Buffer));
@@ -474,16 +478,19 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 		if (BufferLength < 512) {
 			retrieveData = (char *)malloc(512);				// for the copying, read buffer.
 			SetFilePointer(dataHandle, dataLocation, 0, FILE_BEGIN);
-			ReadFile(dataHandle, retrieveData, 512, NULL, NULL);
-			fprintf(stderr, "Size of data retrieved %s\n", retrieveData);
+			if(!ReadFile(dataHandle, retrieveData, 512, NULL, NULL)) fprintf(stderr, "UGHGHGHGHGH\n");
+			fprintf(stderr, "Data retrieved %s\n", retrieveData);
 		}
 		else {
 			retrieveData = (char *)malloc(BufferLength);
 			SetFilePointer(dataHandle, dataLocation, 0, FILE_BEGIN);
-			ReadFile(dataHandle, retrieveData, BufferLength, NULL, NULL);
+			if(!ReadFile(dataHandle, retrieveData, BufferLength, NULL, NULL)) fprintf(stderr, "UGHGHGHGHGH\n");
 			fprintf(stderr, "Size of data retrieved %s\n", retrieveData);
 		}
 
+		if (Offset > fileSize) {
+			fprintf(stderr, "[!] PROBLEM HERE");
+		}
 
 		/* moving data to buffer and modifying values */
 		memcpy_s(Buffer, BufferLength, retrieveData, BufferLength);		//use this since it doesn't add a space (null term)
@@ -505,20 +512,78 @@ static NTSTATUS DOKAN_CALLBACK LFFSWriteFile(LPCWSTR FileName, LPCVOID Buffer,
 	DWORD NumberOfBytesToWrite, LPDWORD NumberOfBytesWritten,
 	LONGLONG Offset, PDOKAN_FILE_INFO DokanFileInfo)
 {
+	double WriteLocation, WriteSize;
+	char *WriteBuffer;
+
 	fwprintf(stderr, L"[!] Write called.\n"
 		L"\tfilename\t%s\n"
 		L"\tbytes to write\t%d\n"
-		L"\toffset\t%d\n",
-		FileName, NumberOfBytesToWrite, Offset);
+		L"\toffset\t%d\n"
+		L"\tentries\t%d\n",
+		FileName, NumberOfBytesToWrite, Offset, ENTRIES);
 	
 	/* want to create the struct on the initial call. If Offset == 0, no previous calls made */
 	if (Offset == 0) {
-		// create new directory struct, make a function
-		fwprintf(stderr, L"[!] New file found, entry needed\t%s\n", FileName);
+		if (FindFile(FileName) == 0) {
+			// create new directory struct, make a function
+			fwprintf(stderr, L"[!] File to write found\t%s\n", FileName);
+			WriteLocation = (FFRESULT->start - 1) * 512;
+			SetFilePointer(dataHandle, WriteLocation, 0, FILE_BEGIN);
+			
+			/* find needed buffer size. Must be 512 or multiple of 512 */
+			if (NumberOfBytesToWrite % 512 == 0) {
+				//WriteBuffer = (char*)malloc(NumberOfBytesToWrite / BLOCKSIZE);
+				WriteSize = NumberOfBytesToWrite;
+				fprintf(stderr, "[+] File size is multiple of 512. Write buffer size is\t%f\n", WriteSize);
+			}
+			else {
+				/* file is not a multiple of 512 */
+				if (NumberOfBytesToWrite % 512 != 0) {
+					//WriteBuffer = (char*)malloc(((FFRESULT->end - FFRESULT->start) + 1) * 512);
+					WriteSize = ((FFRESULT->end - FFRESULT->start) + 1) * 512;
+					fprintf(stderr, "[+] File size is NOT multiple of 512. Write buffer size is\t%f\n", WriteSize);
+				}
+			}
+
+			if (!WriteFile(dataHandle, Buffer, WriteSize, NULL, NULL)) fprintf(stderr, "[-] Error writing to storage\n");
+			fprintf(stderr, "Write Location \t%lf", WriteLocation);
+		}
+		else {
+			fprintf(stderr, "[-] ERROR no file found to write to\n");
+			return STATUS_FILE_INVALID;
+		}
 	}
 	else {
 		// need to update the file size
-		fwprintf(stderr, "[+] Need to update filesize for %s\n", FileName);
+		fwprintf(stderr, L"[+] Need to update filesize for %s\n\toffset is %ld\n", FileName, Offset);
+		if (FindFile(FileName) == 0) {
+			// create new directory struct, make a function
+			fwprintf(stderr, L"[!] File to write found\t%s\n", FileName);
+			WriteLocation = Offset;
+			SetFilePointer(dataHandle, WriteLocation, 0, FILE_BEGIN);
+
+			/* find needed buffer size. Must be 512 or multiple of 512 */
+			if (NumberOfBytesToWrite % 512 == 0) {
+				//WriteBuffer = (char*)malloc(NumberOfBytesToWrite / BLOCKSIZE);
+				WriteSize = NumberOfBytesToWrite;
+				fprintf(stderr, "[+] File size is multiple of 512. Write buffer size is\t%f\n", WriteSize);
+			}
+			else {
+				/* file is not a multiple of 512 */
+				if (NumberOfBytesToWrite % 512 != 0) {
+					//WriteBuffer = (char*)malloc(((FFRESULT->end - FFRESULT->start) + 1) * 512);
+					WriteSize = ((FFRESULT->end - FFRESULT->start) + 1) * 512;
+					fprintf(stderr, "[+] File size is NOT multiple of 512. Write buffer size is\t%f\n", WriteSize);
+				}
+			}
+
+			if (!WriteFile(dataHandle, Buffer, WriteSize, NULL, NULL)) fprintf(stderr, "[-] Error writing to storage\n");
+			fprintf(stderr, "Write Location \t%lf", WriteLocation);
+		}
+		else {
+			fprintf(stderr, "[-] ERROR no file found to write to\n");
+			return STATUS_FILE_INVALID;
+		}
 	}
 
 	return STATUS_SUCCESS;
@@ -567,8 +632,12 @@ static NTSTATUS DOKAN_CALLBACK LFFSFindFiles(LPCWSTR FileName, PFillFindData ffd
 	*/
 	for (i = 0; i < ENTRIES; i++) {
 		fprintf(stderr, "[!] Listing filename %s\n", tmp->filename);	// debugging
-		mbstowcs_s(NULL, namebuf, 64, tmp->filename, 32);				// convert char array to wchar_t array
+		fwprintf(stderr, L"1\n");
+		int x = mbstowcs_s(NULL, namebuf, 64, tmp->filename, 50);				// convert char array to wchar_t array
+		
+		fwprintf(stderr, L"ERROR: %d\n", x);
 		wcscpy_s(findData->cFileName, sizeof(namebuf), namebuf);		// copy filename to struct for file listing
+		fwprintf(stderr, L"3\n");
 		findData->nFileSizeHigh = 0;									// high order set to zero for testing purposes (only small files)
 		findData->nFileSizeLow = (tmp->end - tmp->start) + tmp->off;	// calculates and sets the low order value
 		ffd(findData, DokanFileInfo);									// uses function pointer to return data to Dokan
@@ -623,10 +692,6 @@ static NTSTATUS DOKAN_CALLBACK LFFSSetEndOfFile(LPCWSTR FileName, LONGLONG ByteO
 
 	/* call to create new struct */
 	CreateNewDirectoryEntry(FileName, ByteOffset);
-
-	/* if the new file is there, update ENTRIES */
-	if (FindFile(FileName) == 0) ENTRIES++;				//NOTE: Need to write to storage still
-
 	return STATUS_SUCCESS;
 }
 
@@ -708,7 +773,7 @@ int main()
 
 	dokanOptions->MountPoint = L"E";
 	/* seems to cause some issues if uncommented. Not sure why. */
-	dokanOptions->Options = DOKAN_OPTION_DEBUG | DOKAN_OPTION_STDERR;
+	//dokanOptions->Options = DOKAN_OPTION_DEBUG | DOKAN_OPTION_STDERR;
 	dokanOptions->Version = DOKAN_VERSION;
 	dokanOptions->ThreadCount = 1;
 

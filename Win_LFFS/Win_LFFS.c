@@ -126,7 +126,7 @@ void init_dir(HANDLE usbHandle)
 			memcpy(off, &block[begin + 38], 3);
 			off[2] = '\0';
 			printf("[+] offset\t%s|%d\n", off, atoi(off));
-			tmp->off = atoi(end);
+			tmp->off = atoi(off);
 
 			prev->next = tmp;
 			prev = tmp;
@@ -206,6 +206,7 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	CalcOff = FileSize % BLOCKSIZE;
 	if (CalcOff > 0) CalcSize = (FileSize / BLOCKSIZE) + 1;
 	else CalcSize = FileSize / BLOCKSIZE;
+	fprintf(stderr, "[+] Offset is %d\n", CalcOff);
 	tmp = NULL;
 	
 	/*
@@ -223,7 +224,7 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 		tmp = HEAD;
 
 		for (i = 0; i < ENTRIES-1; i++) tmp = tmp->next;
-		fprintf(stderr, "[+] Found last file\t%s\n\tlocation:\t%d\n", tmp->filename, tmp->start);
+		fprintf(stderr, "[+] Found last file\t%s\n\tlocation:\t%d\n", tmp->filename, tmp->end + 1);
 
 		/* calculate data locations */
 		tmp->next = NewFile;
@@ -254,13 +255,15 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	WriteLocation = 10 + (ENTRIES * 41);
 	sprintf_s(start, 11, "%d", tmp->end + 1);
 	sprintf_s(end, 11, "%d", NewFile->end);
-	sprintf_s(off, 3, "%d", NewFile->off);				/* offset is just the remainder of the size/512 */
+	sprintf_s(off, 4, "%d", NewFile->off);				/* offset is just the remainder of the size/512 */
 
 	printf("[!] File Info To Write:\n"
 		"\tstart\t%s\n"
 		"\tend\t%s\n"
 		"\toff\t%s\n"
 		, start, end, off);
+
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 
 	/*
 	* NOTE: all write functions are to memory, NOT the drive. there is a
@@ -270,7 +273,8 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	for (i = 0; i < strlen(NewFile->filename) + 1; i++) {
 		block[WriteLocation + i] = NewFile->filename[i];
 	}
-	NewFile->filename[17] = '\0';
+	
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 	printf("*BEGINNING DIRECTORY WRITE*");
 	// writes start block to directory
 	for (i = 0; i < strlen(start) + 1; i++) {
@@ -278,12 +282,12 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	}
 
 	printf("\n\tStart Location Writen\n");
-
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 	// writes end block to directory
 	for (i = 0; i < strlen(end) + 1; i++) {
 		block[WriteLocation + 27 + i] = end[i];
 	}
-
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 	printf("\n\tEnd Location Writen\n");
 
 	// writes offset to directory
@@ -303,6 +307,7 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	/* rewrite updated directory */
 	SetFilePointer(dataHandle, 0, 0, FILE_BEGIN);
 	//if (!WriteFile(dataHandle, block, BLOCKSIZE, NULL, NULL)) fprintf(stderr, "[!] ERROR re-writing directory\n");
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 
 	return 0;
 }
@@ -416,7 +421,7 @@ static NTSTATUS DOKAN_CALLBACK LFFSGetFileInformation(LPCWSTR FileName,
 		Buffer->dwFileAttributes |= FILE_ATTRIBUTE_NORMAL;
 		Buffer->nFileSizeHigh = 0;
 		Buffer->nFileSizeLow = ((FFRESULT->end - FFRESULT->start) * 512) + FFRESULT->off;
-		fprintf(stderr, "[+] File Found!\t%s\n", FFRESULT->filename);
+		fprintf(stderr, "[+] File Found!\t%s\n\tsize\t%ld\n", FFRESULT->filename, Buffer->nFileSizeLow);
 		return STATUS_SUCCESS;
 	}
 	else if (strlen(FileName) <= 32){
@@ -448,7 +453,7 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 	DWORD BufferLength, LPDWORD ReadLength, LONGLONG Offset,
 	PDOKAN_FILE_INFO DokanFileInfo)
 {
-	double dataLocation, fileSize;
+	double dataLocation, fileSize, BytesRead;
 
 	if (FindFile(FileName) == 0) {
 		fwprintf(stderr, L"[!] Read called on %s.\n"
@@ -458,10 +463,11 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 			, FileName, BufferLength, *ReadLength, Offset);
 
 		/* calculates location of data in memory */
-		dataLocation = (FFRESULT->start - 1) * 512;										// normally would find file, but only one for now
-		fwprintf(stderr, L"\tdata begin location %lf\n", dataLocation);			// debugging 
-		fileSize = (FFRESULT->start - FFRESULT->end) + FFRESULT->off;						// calculated bytes to write
-		fwprintf(stderr, L"\tfilesize calculated at %lf byte(s)\n", fileSize);	// more debugging
+		dataLocation = (FFRESULT->start - 1) * 512;												// normally would find file, but only one for now
+		fwprintf(stderr, L"\tdata begin location %lf\n", dataLocation);							// debugging 
+		fileSize = ((FFRESULT->end - FFRESULT->start)*512) + FFRESULT->off;						// calculated bytes to write
+		fwprintf(stderr, L"\tfilesize calculated at %lf byte(s)\n", fileSize);					// more debugging
+		fprintf(stderr, "%d\t%d\n\t%d\n", FFRESULT->end, FFRESULT->start, FFRESULT->off);
 		
 		memset(Buffer, 0, sizeof(Buffer));
 
@@ -480,21 +486,22 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 			SetFilePointer(dataHandle, dataLocation, 0, FILE_BEGIN);
 			if(!ReadFile(dataHandle, retrieveData, 512, NULL, NULL)) fprintf(stderr, "UGHGHGHGHGH\n");
 			fprintf(stderr, "Data retrieved %s\n", retrieveData);
+			BytesRead = 512;
 		}
 		else {
 			retrieveData = (char *)malloc(BufferLength);
 			SetFilePointer(dataHandle, dataLocation, 0, FILE_BEGIN);
 			if(!ReadFile(dataHandle, retrieveData, BufferLength, NULL, NULL)) fprintf(stderr, "UGHGHGHGHGH\n");
-			fprintf(stderr, "Size of data retrieved %s\n", retrieveData);
-		}
-
-		if (Offset > fileSize) {
-			fprintf(stderr, "[!] PROBLEM HERE");
+			fprintf(stderr, "Data given so far %lf\nBuffer size %lf\n", Offset, BufferLength);
+			if (Offset >= fileSize) 
+				BytesRead = 0;
+			else if (Offset + BufferLength > fileSize) BytesRead = fileSize - Offset;
+			else BytesRead = BufferLength;
 		}
 
 		/* moving data to buffer and modifying values */
 		memcpy_s(Buffer, BufferLength, retrieveData, BufferLength);		//use this since it doesn't add a space (null term)
-		*ReadLength = BufferLength;
+		*ReadLength = BytesRead;
 
 		free(retrieveData);
 
@@ -639,7 +646,7 @@ static NTSTATUS DOKAN_CALLBACK LFFSFindFiles(LPCWSTR FileName, PFillFindData ffd
 		wcscpy_s(findData->cFileName, sizeof(namebuf), namebuf);		// copy filename to struct for file listing
 		fwprintf(stderr, L"3\n");
 		findData->nFileSizeHigh = 0;									// high order set to zero for testing purposes (only small files)
-		findData->nFileSizeLow = (tmp->end - tmp->start) + tmp->off;	// calculates and sets the low order value
+		findData->nFileSizeLow = ((tmp->end - tmp->start)*512) + tmp->off;	// calculates and sets the low order value
 		ffd(findData, DokanFileInfo);									// uses function pointer to return data to Dokan
 		if(tmp->next != NULL) tmp = tmp->next;
 		else break;

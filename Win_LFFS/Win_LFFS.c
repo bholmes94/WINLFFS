@@ -131,6 +131,8 @@ void init_dir(HANDLE usbHandle)
 
 			prev->next = tmp;
 			prev = tmp;
+
+			if (i == ENTRIES) tmp->next = NULL;
 		}
 	}
 }
@@ -191,8 +193,6 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	char start[12];		// start block buffer
 	char end[12];		// end block buffer
 	char off[12];		// offset buffer for last block
-	wchar_t *name = L"\\yoda.pdf";
-	LPWSTR pName = name;
 	wchar_t *cpy[64];
 	char filename[16];
 
@@ -218,7 +218,23 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	*/
 
 	if (ENTRIES == 0) {
-		//TODO: Add this 
+		int i;
+
+		/* calculate data locations */
+		HEAD = NewFile;
+		NewFile->start = 2;
+		NewFile->end = 1 + CalcSize;
+		NewFile->off = CalcOff;
+		//strcpy_s(NewFile->filename, 16, filename + 1);
+
+		wcstombs_s(NULL, filename, 16, FileName, 32);
+
+		for (i = 0; i < 16; i++) {
+			filename[i] = filename[i + 1];
+		}
+
+		fprintf(stderr, "[!] %s\n", filename);
+		strcpy_s(NewFile->filename, 16, filename);
 	}
 	else {
 		// otherwise, we can base off of last item
@@ -255,7 +271,7 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 
 	/* now we need to update the directory block */
 	WriteLocation = 10 + (ENTRIES * 41);
-	sprintf_s(start, 11, "%d", tmp->end + 1);
+	sprintf_s(start, 11, "%d", NewFile->start);
 	sprintf_s(end, 11, "%d", NewFile->end);
 	sprintf_s(off, 4, "%d", NewFile->off);				/* offset is just the remainder of the size/512 */
 
@@ -307,8 +323,8 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	}
 
 	/* rewrite updated directory */
-	//SetFilePointer(dataHandle, 0, 0, FILE_BEGIN);
-	//if (!WriteFile(dataHandle, block, BLOCKSIZE, NULL, NULL)) fprintf(stderr, "[!] ERROR re-writing directory\n");
+	SetFilePointer(dataHandle, 0, 0, FILE_BEGIN);
+	if (!WriteFile(dataHandle, block, BLOCKSIZE, NULL, NULL)) fprintf(stderr, "[!] ERROR re-writing directory\n");
 	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 
 	return 0;
@@ -342,6 +358,61 @@ static int CleanupFileData(LPCWSTR FileName)
 static int CleanupFileDirectory(LPCWSTR FileName)
 {
 	/* if it is the last item, we can just delete it without moving others */
+	struct entry *tmp;
+	struct entry *prev;
+	struct entry *next;
+	int i;
+	LPWSTR CleanFileName = memmove(FileName + 1, FileName + 1, strlen(FileName));
+	wchar_t ConvertedExisting[50];
+
+	/* search for file, use entry number to re-assemble */
+	tmp = HEAD;
+	for (i = 0; i < ENTRIES; i++) {
+		mbstowcs_s(NULL, ConvertedExisting, 50, tmp->filename, 16);
+		if (lstrcmpW(CleanFileName, ConvertedExisting) == 0) {
+			fprintf(stderr, "[+] CleanupFileDirectory found file. Entry number %d\n", i+1);
+			break;
+		}
+		tmp = tmp->next;
+	}
+
+	/* deals with entry if it is the last one */
+	if (tmp->next == NULL) {
+		fprintf(stderr, "[+] Last item in directory. Location in directory %d\n", 10 + (i* 41));
+		
+		/* decrement entries, update the directory */
+		ENTRIES--;
+		block[0] = ENTRIES - '0';
+		int location = 10 + (i * 41);
+
+		for (i = 0; i < 41; i++) block[location + i] = '\0';
+		
+		/* find prev entry and update next pointer */
+		tmp = HEAD;
+		for (i = 0; i < ENTRIES-1; i++) tmp = tmp->next;
+		fprintf(stderr, "[+] File just before removed file %s\n", tmp->filename);
+		tmp->next = NULL;
+	}
+	else {
+		fprintf(stderr, "[+] Item not last in directory moving entries\n");
+		
+		int j;
+		ENTRIES--;
+		block[0] = ENTRIES - '0';
+		int location = 10 + (i * 41);
+
+		/* deals with files not at the end */
+		next = tmp->next;
+		prev = HEAD;
+		for (j = 0; j < i - 1; j++) prev = prev->next;
+		fprintf(stderr, "[+] File just before removed file %s\n file after %s\n", prev->filename, next->filename);
+
+
+	}
+
+
+	// TODO: Need to write the directory to the drive again here.
+
 	return 0;
 }
 
@@ -632,7 +703,7 @@ static VOID DOKAN_CALLBACK LFFSCleanup(LPCWSTR FileName, PDOKAN_FILE_INFO DokanF
 
 static VOID DOKAN_CALLBACK LFFSCloseFile(LPCWSTR FileName, PDOKAN_FILE_INFO DokanFileInfo)
 {
-	fwprintf(stderr, L"[!] CloseFile called on %s\n", FileName);
+	//fwprintf(stderr, L"[!] CloseFile called on %s\n", FileName);
 }
 
 static NTSTATUS DOKAN_CALLBACK LFFSMounted(PDOKAN_FILE_INFO DokanFileInfo)

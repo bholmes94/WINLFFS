@@ -28,21 +28,21 @@ struct entry {
 };
 
 /*
- * Function that takes a handle to the USB drive. Called before the initializing
- * DOKAN call. Loads the directory block (512 bytes) into memory and parses the
- * containing information to generate a linked list of the files and attributes
- * whose data is stored inside the rest of the drive.
- *
- * @param usbHandle -	HANDLE to the USB device to read from
- *
- */
+* Function that takes a handle to the USB drive. Called before the initializing
+* DOKAN call. Loads the directory block (512 bytes) into memory and parses the
+* containing information to generate a linked list of the files and attributes
+* whose data is stored inside the rest of the drive.
+*
+* @param usbHandle -	HANDLE to the USB device to read from
+*
+*/
 void init_dir(HANDLE usbHandle)
 {
 	int count, i, begin;
 	char filename[17];
 	char start[11];
 	char end[11];
-	char off[3];
+	char off[4];
 	struct entry *prev;
 
 	if (usbHandle == INVALID_HANDLE_VALUE) {
@@ -98,7 +98,8 @@ void init_dir(HANDLE usbHandle)
 
 			HEAD = prev;
 
-		} else {
+		}
+		else {
 			struct entry *tmp = malloc(sizeof(struct entry));
 
 			begin = 10 + (41 * (i - 1));		// calculate the location of entry
@@ -123,10 +124,10 @@ void init_dir(HANDLE usbHandle)
 			tmp->end = atoi(end);
 
 			// copy the offset of the last block from mem
-			memcpy(off, &block[begin + 38], 3);
-			off[2] = '\0';
+			memcpy(off, &block[begin + 38], 4);
+			off[3] = '\0';
 			printf("[+] offset\t%s|%d\n", off, atoi(off));
-			tmp->off = atoi(end);
+			tmp->off = atoi(off);
 
 			prev->next = tmp;
 			prev = tmp;
@@ -135,16 +136,16 @@ void init_dir(HANDLE usbHandle)
 }
 
 /*
- * Function that takes a pointer to a string of 16-bit Unicode chars which make
- * up the filename that the OS is searching for. Cleaner than looping through
- * on individual functions. If the file is in the filesystem directory, it will
- * set global pointer FFRESULT to the entry struct representing that file and 
- * return a 0. If it is not in the system, it will set the pointer to NULL and 
- * return a 1.
- *
- * @param FileName - pointer to the string of the file to search for
- *
- */
+* Function that takes a pointer to a string of 16-bit Unicode chars which make
+* up the filename that the OS is searching for. Cleaner than looping through
+* on individual functions. If the file is in the filesystem directory, it will
+* set global pointer FFRESULT to the entry struct representing that file and
+* return a 0. If it is not in the system, it will set the pointer to NULL and
+* return a 1.
+*
+* @param FileName - pointer to the string of the file to search for
+*
+*/
 static int FindFile(LPWSTR FileName) {
 	// found online: http://stackoverflow.com/questions/4295754/how-to-remove-first-character-from-c-string
 	LPWSTR CleanFileName = memmove(FileName + 1, FileName + 1, strlen(FileName));
@@ -161,7 +162,8 @@ static int FindFile(LPWSTR FileName) {
 		if (lstrcmpW(CleanFileName, ConvertedExisting) == 0) {
 			FFRESULT = tmp;
 			return 0;
-		} else {
+		}
+		else {
 			tmp = tmp->next;
 			i++;
 		}
@@ -172,15 +174,15 @@ static int FindFile(LPWSTR FileName) {
 }
 
 /*
- * Function that takes in a pointer to a file which has not yet been added
- * to the directory and it's corresponding filesize. It must then create a
- * new struct and calculate the space needed to write to the data section
- * of the storage medium.
- *
- * @param FileName	- long pointer to the wide string of the filename
- * @param FileSize	- size of file to be allocated
- *
- */
+* Function that takes in a pointer to a file which has not yet been added
+* to the directory and it's corresponding filesize. It must then create a
+* new struct and calculate the space needed to write to the data section
+* of the storage medium.
+*
+* @param FileName	- long pointer to the wide string of the filename
+* @param FileSize	- size of file to be allocated
+*
+*/
 static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 {
 	int CalcStart, CalcEnd, CalcSize, CalcOff, WriteLocation;
@@ -197,7 +199,7 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	fwprintf(stderr, L"[+] CreateNewDirectoryEntry\n"
 		L"\tFile to create:\t%s\n"
 		L"\tFile space needed:\t%ld\n"
-		,FileName, FileSize);
+		, FileName, FileSize);
 
 	/* create struct */
 	struct entry *NewFile = (struct entry*) malloc(sizeof(struct entry));
@@ -206,13 +208,14 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	CalcOff = FileSize % BLOCKSIZE;
 	if (CalcOff > 0) CalcSize = (FileSize / BLOCKSIZE) + 1;
 	else CalcSize = FileSize / BLOCKSIZE;
+	fprintf(stderr, "[+] Offset is %d\n", CalcOff);
 	tmp = NULL;
-	
+
 	/*
-	 * Need to be careful here. If the file is the first one, we
-	 * must treat it differently since there is no last added file
-	 * to base calculations on.
-	 */
+	* Need to be careful here. If the file is the first one, we
+	* must treat it differently since there is no last added file
+	* to base calculations on.
+	*/
 
 	if (ENTRIES == 0) {
 		//TODO: Add this 
@@ -222,8 +225,8 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 		int i;
 		tmp = HEAD;
 
-		for (i = 0; i < ENTRIES-1; i++) tmp = tmp->next;
-		fprintf(stderr, "[+] Found last file\t%s\n\tlocation:\t%d\n", tmp->filename, tmp->start);
+		for (i = 0; i < ENTRIES - 1; i++) tmp = tmp->next;
+		fprintf(stderr, "[+] Found last file\t%s\n\tlocation:\t%d\n", tmp->filename, tmp->end + 1);
 
 		/* calculate data locations */
 		tmp->next = NewFile;
@@ -248,19 +251,21 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 		"\tSize in Blocks:\t%d\n"
 		"\tStart Block:\t%d\n"
 		"\tEnd Block:\t%d\n"
-		, NewFile->filename, NewFile->off, (NewFile->end - NewFile->start) + 1, NewFile ->start, NewFile->end);
+		, NewFile->filename, NewFile->off, (NewFile->end - NewFile->start) + 1, NewFile->start, NewFile->end);
 
 	/* now we need to update the directory block */
 	WriteLocation = 10 + (ENTRIES * 41);
 	sprintf_s(start, 11, "%d", tmp->end + 1);
 	sprintf_s(end, 11, "%d", NewFile->end);
-	sprintf_s(off, 3, "%d", NewFile->off);				/* offset is just the remainder of the size/512 */
+	sprintf_s(off, 4, "%d", NewFile->off);				/* offset is just the remainder of the size/512 */
 
 	printf("[!] File Info To Write:\n"
 		"\tstart\t%s\n"
 		"\tend\t%s\n"
 		"\toff\t%s\n"
 		, start, end, off);
+
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 
 	/*
 	* NOTE: all write functions are to memory, NOT the drive. there is a
@@ -270,7 +275,8 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	for (i = 0; i < strlen(NewFile->filename) + 1; i++) {
 		block[WriteLocation + i] = NewFile->filename[i];
 	}
-	NewFile->filename[17] = '\0';
+
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 	printf("*BEGINNING DIRECTORY WRITE*");
 	// writes start block to directory
 	for (i = 0; i < strlen(start) + 1; i++) {
@@ -278,12 +284,12 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	}
 
 	printf("\n\tStart Location Writen\n");
-
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 	// writes end block to directory
 	for (i = 0; i < strlen(end) + 1; i++) {
 		block[WriteLocation + 27 + i] = end[i];
 	}
-
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 	printf("\n\tEnd Location Writen\n");
 
 	// writes offset to directory
@@ -301,9 +307,41 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	}
 
 	/* rewrite updated directory */
-	SetFilePointer(dataHandle, 0, 0, FILE_BEGIN);
+	//SetFilePointer(dataHandle, 0, 0, FILE_BEGIN);
 	//if (!WriteFile(dataHandle, block, BLOCKSIZE, NULL, NULL)) fprintf(stderr, "[!] ERROR re-writing directory\n");
+	fprintf(stderr, "Test size info\t%d\n", NewFile->start);
 
+	return 0;
+}
+
+/*
+* This function is called first to clear out the data where the file once
+* resided in the system. It will calculate the size needed to be cleared
+* using the entry struct and write 0's to that location. Once that is done,
+* it deals with moving all subsequent files up to maintain the contiguous
+* data scheme implemented. This function is called by the LFFSCleanup() when
+* the DeleteOnClose flag is set on that files DokanFileInfo struct.
+*
+* @param FileName - The pointer to the filename
+*/
+static int CleanupFileData(LPCWSTR FileName)
+{
+	/* like with the directory, if it's the last file, no need to move other files */
+	return 0;
+}
+
+/*
+* This function is responsible for cleaning up the directory on both the
+* physical USB drive and in the data structure containing the entries. It
+* will first remove it from the list. After that, the function takes the
+* remaining entries and moves them to ensure each entry is contiguous.
+* Finally, it decrements the ENTRIES count so subsequent functions work.
+*
+* @param FileName - The pointer to the filename
+*/
+static int CleanupFileDirectory(LPCWSTR FileName)
+{
+	/* if it is the last item, we can just delete it without moving others */
 	return 0;
 }
 
@@ -365,9 +403,9 @@ static NTSTATUS DOKAN_CALLBACK LFFSZwCreateFile(
 	}
 
 	/*else if (lstrcmpW(FileName, L"\\file2.iso") == 0) {
-		fprintf(stderr, "[+] file addition test\n");
-		DokanFileInfo->IsDirectory = FALSE;
-		return STATUS_SUCCESS;
+	fprintf(stderr, "[+] file addition test\n");
+	DokanFileInfo->IsDirectory = FALSE;
+	return STATUS_SUCCESS;
 	}*/
 	else {
 		DokanFileInfo->IsDirectory = FALSE;
@@ -390,23 +428,23 @@ static NTSTATUS DOKAN_CALLBACK LFFSGetFileInformation(LPCWSTR FileName,
 	fprintf(stderr, L"[!] GetFileInformation called on %s\n", FileName);
 
 	/*
-	 * There are three scenarios which are dealt with here:
-	 *		1) The FileName is just the root directory. In which case, set the attributes
-	 *		   to be a directory and as per the DOKAN documentation, set the flag for
-	 *		   FILE_FLAG_BACKUP_SEMANTICS
-	 *		
-	 *		2) The FileName already is in the directory and in use. In which case, we use
-	 *		   the FindFile function to check where it is and gather it's information such
-	 *		   as the size. Then we'll use general file attributes.
-	 *
-	 *		2) The FileName needs to be created. In this case, we give it general attribs
-	 *		   and set the file size to 0 for LFFSSetEndOfFile to actually deal with. If 
-	 *		   that is called prior to gathering file info, we should change it!
-	 *
-	 * Otherwise, we can just return an error as the file can't be added since the filename
-	 * is larger than the 16 byte limit.
-	 *
-	 */
+	* There are three scenarios which are dealt with here:
+	*		1) The FileName is just the root directory. In which case, set the attributes
+	*		   to be a directory and as per the DOKAN documentation, set the flag for
+	*		   FILE_FLAG_BACKUP_SEMANTICS
+	*
+	*		2) The FileName already is in the directory and in use. In which case, we use
+	*		   the FindFile function to check where it is and gather it's information such
+	*		   as the size. Then we'll use general file attributes.
+	*
+	*		2) The FileName needs to be created. In this case, we give it general attribs
+	*		   and set the file size to 0 for LFFSSetEndOfFile to actually deal with. If
+	*		   that is called prior to gathering file info, we should change it!
+	*
+	* Otherwise, we can just return an error as the file can't be added since the filename
+	* is larger than the 16 byte limit.
+	*
+	*/
 	if (lstrcmpW(FileName, L"\\") == 0) {
 		/* only dealing with the root dir here */
 		Buffer->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY | FILE_FLAG_BACKUP_SEMANTICS;
@@ -416,10 +454,10 @@ static NTSTATUS DOKAN_CALLBACK LFFSGetFileInformation(LPCWSTR FileName,
 		Buffer->dwFileAttributes |= FILE_ATTRIBUTE_NORMAL;
 		Buffer->nFileSizeHigh = 0;
 		Buffer->nFileSizeLow = ((FFRESULT->end - FFRESULT->start) * 512) + FFRESULT->off;
-		fprintf(stderr, "[+] File Found!\t%s\n", FFRESULT->filename);
+		fprintf(stderr, "[+] File Found!\t%s\n\tsize\t%ld\n", FFRESULT->filename, Buffer->nFileSizeLow);
 		return STATUS_SUCCESS;
 	}
-	else if (strlen(FileName) <= 32){
+	else if (strlen(FileName) <= 32) {
 		fprintf(stderr, "[+] valid filename size. %d bytes long\n", strlen(FileName));
 		Buffer->dwFileAttributes |= FILE_ATTRIBUTE_NORMAL;
 		Buffer->nFileSizeHigh = 0;
@@ -433,22 +471,22 @@ static NTSTATUS DOKAN_CALLBACK LFFSGetFileInformation(LPCWSTR FileName,
 }
 
 /*
- * If the file is complete, the buffer will not be filled all the way. Otherwise,
- * you must fill the buffer in order to get the program to keep requesting more.
- *
- * @param FileName      - pointer to the string of requested file
- * @param Buffer	    - pointer to the buffer to write to
- * @param BufferLength  - buffer size
- * @param ReadLength    - amount of data read (in bytes)
- * @param Offset	    - space already written
- * @param DokanFileInfo - optional reference passed (not used yet)
- *
- */
+* If the file is complete, the buffer will not be filled all the way. Otherwise,
+* you must fill the buffer in order to get the program to keep requesting more.
+*
+* @param FileName      - pointer to the string of requested file
+* @param Buffer	    - pointer to the buffer to write to
+* @param BufferLength  - buffer size
+* @param ReadLength    - amount of data read (in bytes)
+* @param Offset	    - space already written
+* @param DokanFileInfo - optional reference passed (not used yet)
+*
+*/
 static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 	DWORD BufferLength, LPDWORD ReadLength, LONGLONG Offset,
 	PDOKAN_FILE_INFO DokanFileInfo)
 {
-	double dataLocation, fileSize;
+	double dataLocation, fileSize, BytesRead;
 
 	if (FindFile(FileName) == 0) {
 		fwprintf(stderr, L"[!] Read called on %s.\n"
@@ -458,43 +496,53 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 			, FileName, BufferLength, *ReadLength, Offset);
 
 		/* calculates location of data in memory */
-		dataLocation = (FFRESULT->start - 1) * 512;										// normally would find file, but only one for now
-		fwprintf(stderr, L"\tdata begin location %lf\n", dataLocation);			// debugging 
-		fileSize = (FFRESULT->start - FFRESULT->end) + FFRESULT->off;						// calculated bytes to write
-		fwprintf(stderr, L"\tfilesize calculated at %lf byte(s)\n", fileSize);	// more debugging
-		
+		dataLocation = (FFRESULT->start - 1) * 512;												// normally would find file, but only one for now
+		fwprintf(stderr, L"\tdata begin location %lf\n", dataLocation);							// debugging 
+		fileSize = ((FFRESULT->end - FFRESULT->start) * 512) + FFRESULT->off;						// calculated bytes to write
+		fwprintf(stderr, L"\tfilesize calculated at %lf byte(s)\n", fileSize);					// more debugging
+		fprintf(stderr, "%d\t%d\n\t%d\n", FFRESULT->end, FFRESULT->start, FFRESULT->off);
+
 		memset(Buffer, 0, sizeof(Buffer));
 
 		/* retrieving data */
 		char *retrieveData;
 
-		/* 
-		 * temp check to make sure we can fit file into buffer. Note 
-		 * that when copying, the buffer will NOT be a multiple of 
-		 * or above 512 on occasion. So we must use a 512byte buffer
-		 * in these cases to ensure a proper read. Still could be 
-		 * different depending on how large files are copied.
-		 */
+		/*
+		* temp check to make sure we can fit file into buffer. Note
+		* that when copying, the buffer will NOT be a multiple of
+		* or above 512 on occasion. So we must use a 512byte buffer
+		* in these cases to ensure a proper read. Still could be
+		* different depending on how large files are copied.
+		*/
 		if (BufferLength < 512) {
 			retrieveData = (char *)malloc(512);				// for the copying, read buffer.
 			SetFilePointer(dataHandle, dataLocation, 0, FILE_BEGIN);
-			if(!ReadFile(dataHandle, retrieveData, 512, NULL, NULL)) fprintf(stderr, "UGHGHGHGHGH\n");
+			if (!ReadFile(dataHandle, retrieveData, 512, NULL, NULL)) fprintf(stderr, "UGHGHGHGHGH\n");
 			fprintf(stderr, "Data retrieved %s\n", retrieveData);
+			BytesRead = 512;
 		}
 		else {
 			retrieveData = (char *)malloc(BufferLength);
-			SetFilePointer(dataHandle, dataLocation, 0, FILE_BEGIN);
-			if(!ReadFile(dataHandle, retrieveData, BufferLength, NULL, NULL)) fprintf(stderr, "UGHGHGHGHGH\n");
-			fprintf(stderr, "Size of data retrieved %s\n", retrieveData);
-		}
-
-		if (Offset > fileSize) {
-			fprintf(stderr, "[!] PROBLEM HERE");
+			ZeroMemory(retrieveData, sizeof(retrieveData));
+			SetFilePointer(dataHandle, dataLocation + Offset, 0, FILE_BEGIN);
+			if (!ReadFile(dataHandle, retrieveData, BufferLength, NULL, NULL)) fprintf(stderr, "UGHGHGHGHGH\n");
+			fprintf(stderr, "Data given so far %lf\nBuffer size %lf\n", Offset, BufferLength);
+			if (Offset >= fileSize)
+				BytesRead = 0;
+			else if (Offset + BufferLength > fileSize) {
+				BytesRead = fileSize - Offset;
+				fprintf(stderr, "\n%s\n", retrieveData);
+				fprintf(stderr, "");
+			}
+			else {
+				BytesRead = BufferLength;
+				fprintf(stderr, "\n%s\n", retrieveData);
+			}
 		}
 
 		/* moving data to buffer and modifying values */
 		memcpy_s(Buffer, BufferLength, retrieveData, BufferLength);		//use this since it doesn't add a space (null term)
-		*ReadLength = BufferLength;
+		*ReadLength = BytesRead;
 
 		free(retrieveData);
 
@@ -503,11 +551,11 @@ static NTSTATUS DOKAN_CALLBACK LFFSReadFile(LPCWSTR FileName, LPVOID Buffer,
 }
 
 /*
- * DOKAN API Callback that takes a buffer filled with data and has to write that data to
- * the filesystem. Also has to update the total file size. As each piece is written, the
- * file size will increase. Since this file is being written at the end of the array, we
- * can assume the only limiting case is if the storage medium is out of space.
- */
+* DOKAN API Callback that takes a buffer filled with data and has to write that data to
+* the filesystem. Also has to update the total file size. As each piece is written, the
+* file size will increase. Since this file is being written at the end of the array, we
+* can assume the only limiting case is if the storage medium is out of space.
+*/
 static NTSTATUS DOKAN_CALLBACK LFFSWriteFile(LPCWSTR FileName, LPCVOID Buffer,
 	DWORD NumberOfBytesToWrite, LPDWORD NumberOfBytesWritten,
 	LONGLONG Offset, PDOKAN_FILE_INFO DokanFileInfo)
@@ -521,77 +569,64 @@ static NTSTATUS DOKAN_CALLBACK LFFSWriteFile(LPCWSTR FileName, LPCVOID Buffer,
 		L"\toffset\t%d\n"
 		L"\tentries\t%d\n",
 		FileName, NumberOfBytesToWrite, Offset, ENTRIES);
-	
-	/* want to create the struct on the initial call. If Offset == 0, no previous calls made */
-	if (Offset == 0) {
-		if (FindFile(FileName) == 0) {
-			// create new directory struct, make a function
-			fwprintf(stderr, L"[!] File to write found\t%s\n", FileName);
-			WriteLocation = (FFRESULT->start - 1) * 512;
-			SetFilePointer(dataHandle, WriteLocation, 0, FILE_BEGIN);
-			
-			/* find needed buffer size. Must be 512 or multiple of 512 */
-			if (NumberOfBytesToWrite % 512 == 0) {
-				//WriteBuffer = (char*)malloc(NumberOfBytesToWrite / BLOCKSIZE);
-				WriteSize = NumberOfBytesToWrite;
-				fprintf(stderr, "[+] File size is multiple of 512. Write buffer size is\t%f\n", WriteSize);
-			}
-			else {
-				/* file is not a multiple of 512 */
-				if (NumberOfBytesToWrite % 512 != 0) {
-					//WriteBuffer = (char*)malloc(((FFRESULT->end - FFRESULT->start) + 1) * 512);
-					WriteSize = ((FFRESULT->end - FFRESULT->start) + 1) * 512;
-					fprintf(stderr, "[+] File size is NOT multiple of 512. Write buffer size is\t%f\n", WriteSize);
-				}
-			}
 
-			if (!WriteFile(dataHandle, Buffer, WriteSize, NULL, NULL)) fprintf(stderr, "[-] Error writing to storage\n");
-			fprintf(stderr, "Write Location \t%lf", WriteLocation);
-		}
-		else {
-			fprintf(stderr, "[-] ERROR no file found to write to\n");
-			return STATUS_FILE_INVALID;
-		}
+	//fprintf(stderr, "BUFFER\n************************\n%s\n************************\n", Buffer);
+	if (FindFile(FileName) != 0) return STATUS_FILE_INVALID;
+
+	/* checks if the buffer is multiple of 512 or not since write must be multiple of 512*/
+	if (NumberOfBytesToWrite % 512 == 0) {
+		/* if file is a multiple of 512, can just write to USB without modifying value */
+		fprintf(stderr, "[+] Contents to write is multiple of 512\n");
+		WriteSize = NumberOfBytesToWrite;
+		WriteLocation = ((FFRESULT->start - 1) * 512) + Offset;			/* beginning of file, plus any offset */
+
+		/* set file pointer and attempt a write to USB */
+		SetFilePointer(dataHandle, WriteLocation, 0, FILE_BEGIN);
+		if(!WriteFile(dataHandle, Buffer, WriteSize, NULL, NULL)) 
+			fprintf(stderr, "[-] ERROR Writing to usb\n");
+
+		/* debugging */
+		fprintf(stderr, "[+] write location\t%lf\namount\t%lf\n", WriteLocation, WriteSize);
 	}
 	else {
-		// need to update the file size
-		fwprintf(stderr, L"[+] Need to update filesize for %s\n\toffset is %ld\n", FileName, Offset);
-		if (FindFile(FileName) == 0) {
-			// create new directory struct, make a function
-			fwprintf(stderr, L"[!] File to write found\t%s\n", FileName);
-			WriteLocation = Offset;
-			SetFilePointer(dataHandle, WriteLocation, 0, FILE_BEGIN);
+		fprintf(stderr, "[+] Contents needs a slightly larger buffer\n");
+		WriteSize = ((NumberOfBytesToWrite / 512) + 1) * 512;
+		WriteLocation = ((FFRESULT->start - 1) * 512) + Offset;
 
-			/* find needed buffer size. Must be 512 or multiple of 512 */
-			if (NumberOfBytesToWrite % 512 == 0) {
-				//WriteBuffer = (char*)malloc(NumberOfBytesToWrite / BLOCKSIZE);
-				WriteSize = NumberOfBytesToWrite;
-				fprintf(stderr, "[+] File size is multiple of 512. Write buffer size is\t%f\n", WriteSize);
-			}
-			else {
-				/* file is not a multiple of 512 */
-				if (NumberOfBytesToWrite % 512 != 0) {
-					//WriteBuffer = (char*)malloc(((FFRESULT->end - FFRESULT->start) + 1) * 512);
-					WriteSize = ((FFRESULT->end - FFRESULT->start) + 1) * 512;
-					fprintf(stderr, "[+] File size is NOT multiple of 512. Write buffer size is\t%f\n", WriteSize);
-				}
-			}
+		/* set file point to attempt a write with slightly larger buffer */
+		if(!SetFilePointer(dataHandle, WriteLocation, 0, FILE_BEGIN)) fprintf(stderr, "[-] FilePointer failed\n");
+		if (!WriteFile(dataHandle, Buffer, WriteSize, NULL, NULL)) 
+			fprintf(stderr, "[-] ERROR Writing with modded buffer\n");
 
-			if (!WriteFile(dataHandle, Buffer, WriteSize, NULL, NULL)) fprintf(stderr, "[-] Error writing to storage\n");
-			fprintf(stderr, "Write Location \t%lf", WriteLocation);
-		}
-		else {
-			fprintf(stderr, "[-] ERROR no file found to write to\n");
-			return STATUS_FILE_INVALID;
-		}
+		/* debugging */
+		fprintf(stderr, "[+] write location\t%lf\namount\t%lf\n", WriteLocation, WriteSize);
+		fprintf(stderr, "");
+
 	}
 
 	return STATUS_SUCCESS;
 }
 
+static NTSTATUS DOKAN_CALLBACK LFFSDeleteFile(LPCWSTR FileName, PDOKAN_FILE_INFO DokanFileInfo)
+{
+	fprintf(stderr, "[+] DeleteFile called\n");
+	return 0;
+}
+
+/*
+* Dokan callback that usually doesn't require much other than ensuring that the Context
+* be returned to NULL. However, if the file is meant to be deleted, than the DeleteOnClose
+* attribute will be set to TRUE. In this case, we must cleanup the data from the usb and
+* clean up the directory.
+*/
 static VOID DOKAN_CALLBACK LFFSCleanup(LPCWSTR FileName, PDOKAN_FILE_INFO DokanFileInfo)
 {
 	fwprintf(stderr, L"[!] CloseFile called on %s\n", FileName);
+	if (DokanFileInfo->DeleteOnClose) {
+		fprintf(stderr, "[+] DeleteOnClose checked\n");
+		CleanupFileDirectory(FileName);
+		CleanupFileData(FileName);
+	}
 	DokanFileInfo->Context = NULL;
 }
 
@@ -623,7 +658,7 @@ static NTSTATUS DOKAN_CALLBACK LFFSFindFiles(LPCWSTR FileName, PFillFindData ffd
 	tmp = HEAD;
 
 	/* test for handling one file */
-/*	fprintf(stderr, "[!] Listing filename %s\n", HEAD->filename);	// debugging
+	/*	fprintf(stderr, "[!] Listing filename %s\n", HEAD->filename);	// debugging
 	mbstowcs_s(NULL, namebuf, 50, tmp->filename, 16);				// convert char array to wchar_t array
 	wcscpy_s(findData->cFileName, sizeof(namebuf), namebuf);		// copy filename to struct for file listing
 	findData->nFileSizeHigh = 0;									// high order set to zero for testing purposes (only small files)
@@ -634,14 +669,14 @@ static NTSTATUS DOKAN_CALLBACK LFFSFindFiles(LPCWSTR FileName, PFillFindData ffd
 		fprintf(stderr, "[!] Listing filename %s\n", tmp->filename);	// debugging
 		fwprintf(stderr, L"1\n");
 		int x = mbstowcs_s(NULL, namebuf, 64, tmp->filename, 50);				// convert char array to wchar_t array
-		
+
 		fwprintf(stderr, L"ERROR: %d\n", x);
 		wcscpy_s(findData->cFileName, sizeof(namebuf), namebuf);		// copy filename to struct for file listing
 		fwprintf(stderr, L"3\n");
 		findData->nFileSizeHigh = 0;									// high order set to zero for testing purposes (only small files)
-		findData->nFileSizeLow = (tmp->end - tmp->start) + tmp->off;	// calculates and sets the low order value
+		findData->nFileSizeLow = ((tmp->end - tmp->start) * 512) + tmp->off;	// calculates and sets the low order value
 		ffd(findData, DokanFileInfo);									// uses function pointer to return data to Dokan
-		if(tmp->next != NULL) tmp = tmp->next;
+		if (tmp->next != NULL) tmp = tmp->next;
 		else break;
 	}
 
@@ -658,7 +693,7 @@ static NTSTATUS DOKAN_CALLBACK LFFSSetFileAttributes(LPCWSTR FileName,
 	return STATUS_SUCCESS;
 }
 
-static NTSTATUS DOKAN_CALLBACK LFFSSetAllocationSize(LPCWSTR FileName, 
+static NTSTATUS DOKAN_CALLBACK LFFSSetAllocationSize(LPCWSTR FileName,
 	LONGLONG AllocSize, PDOKAN_FILE_INFO DokanFileInfo)
 {
 	fprintf(stderr, "[!] SetAllocationSizeCalled on %s\n", FileName);
@@ -674,14 +709,14 @@ static NTSTATUS DOKAN_CALLBACK LFFSSetFileTime(LPCWSTR FileName, CONST FILETIME
 }
 
 /*
- * DOKAN API Callback for truncating or extending the file size. Since this is called 
- * before the actual write call, this should call the function to create a new file
- * entry struct.
- *
- * @param FileName		- file path requested
- * @param ByteOffset	- file length to set
- * @param DokanFileInfo	- additional file info I have added | optional
- */
+* DOKAN API Callback for truncating or extending the file size. Since this is called
+* before the actual write call, this should call the function to create a new file
+* entry struct.
+*
+* @param FileName		- file path requested
+* @param ByteOffset	- file length to set
+* @param DokanFileInfo	- additional file info I have added | optional
+*/
 static NTSTATUS DOKAN_CALLBACK LFFSSetEndOfFile(LPCWSTR FileName, LONGLONG ByteOffset, PDOKAN_FILE_INFO
 	DokanFileInfo)
 {
@@ -796,6 +831,7 @@ int main()
 	dokanOperations->SetFileTime = LFFSSetFileTime;
 	dokanOperations->SetEndOfFile = LFFSSetEndOfFile;
 	dokanOperations->FindStreams = LFFSFindStreams;
+	dokanOperations->DeleteFileA = LFFSDeleteFile;
 
 	printf("Handing off to DOKAN\n");
 	int status = DokanMain(dokanOptions, dokanOperations);

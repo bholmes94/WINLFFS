@@ -25,6 +25,7 @@ struct entry {
 	int start, end, off;	/* block locations and offset amount */
 	struct stat *info;		/* not really used in Windows version */
 	struct entry *next;		/* pointer to next entry in list */
+	int number;				/* location in array */
 };
 
 /*
@@ -72,6 +73,7 @@ void init_dir(HANDLE usbHandle)
 		if (i == 1) {
 			prev = (struct entry*)malloc(sizeof(struct entry));
 			printf("[!] Entry %d location\t10\n", i);
+			prev->number = i;
 
 			memcpy(filename, &block[10], 16);
 			filename[16] = '\0';
@@ -95,7 +97,7 @@ void init_dir(HANDLE usbHandle)
 			off[2] = '\0';
 			printf("[+] offset\t%s|%d\n", off, atoi(off));
 			prev->off = atoi(off);
-
+			printf("Index in list %d\n", prev->number);
 			HEAD = prev;
 
 		}
@@ -104,6 +106,7 @@ void init_dir(HANDLE usbHandle)
 
 			begin = 10 + (41 * (i - 1));		// calculate the location of entry
 			printf("[!] Entry %d location\t%d\n", i, begin);
+			tmp->number = i;
 
 			// copy filename from dir and into array for struct use
 			memcpy(filename, &block[begin], 16);
@@ -131,6 +134,8 @@ void init_dir(HANDLE usbHandle)
 
 			prev->next = tmp;
 			prev = tmp;
+
+			printf("Index in list %d\n", tmp->number);
 
 			if (i == ENTRIES) tmp->next = NULL;
 		}
@@ -330,6 +335,43 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 	return 0;
 }
 
+
+/*
+ * Function will be given an entry that needs to be moved up, replacing an
+ * old entry in the directory. Each entry is 41bytes so it can calculate the
+ * location based on this and the position of the entry within the array.
+ *
+ * @param Move - Pointer to the entry that needs to be moved
+ */
+static int CondenseDirectoryEntry(struct entry *Move)
+{
+	int location, i;
+	char buf[11];
+
+	fprintf(stderr, "[+] CondenseDirectoryEntry called for %s. Move to index %d\n", Move->filename, Move->number);
+	location = 10 + ((Move->number -1)* 41);
+
+	/* migrate directory, clear old entry */
+	for (i = 0; i < 41; i++) block[location + i] = block[location + 41 +i];
+	/* still must update start and end locations */
+	_itoa_s(Move->start, buf, 11, 10);
+	for (i = 0; i < 11; i++) block[location + 16 + i] = buf[i];
+	_itoa_s(Move->end, buf, 11, 10);
+	for (i = 0; i < 11; i++) block[location + 27 + i] = buf[i];
+
+	for (i = 0; i < 41; i++) block[location + 41 + i] = '\0';
+
+	/* debugging. prints out what it will be replacing */
+	for (i = 0; i < 41; i++) fprintf(stderr, "%c ", block[location + i]);
+	fprintf(stderr, "\n");
+	/* prints info that needs to be moved */
+	for (i = 0; i < 41; i++) fprintf(stderr, "%c ", block[location + 41 + i]);
+
+
+
+	return 1;
+}
+
 /*
 * This function is called first to clear out the data where the file once
 * resided in the system. It will calculate the size needed to be cleared
@@ -340,9 +382,43 @@ static int CreateNewDirectoryEntry(LPWSTR FileName, DWORD FileSize)
 *
 * @param FileName - The pointer to the filename
 */
-static int CleanupFileData(LPCWSTR FileName)
+static int CleanupFileData(struct entry *Next, struct entry *Prev)
 {
-	/* like with the directory, if it's the last file, no need to move other files */
+	char *Data;							/* buffer for transfer piece by piece */
+	double Offset = 512;			/* 500MB buffer for faster moves */
+	double loop;						/* calculates loops to move all data */
+	double Location;					/* location in data to move to */
+	double FileSize;
+
+	if (((Next->end - Next->start) + 1) < 2) {
+		FileSize = (Next->end - Next->start) + 1;
+		fprintf(stderr, "[+] Less than 500MB, can do in one loop and one smaller buffer.\n");
+		Data = malloc(sizeof(FileSize * 512));		/* malloc space */
+		Location = (Next->start - 1) * 512;
+		SetFilePointer(dataHandle, Location, 0, FILE_BEGIN);
+		if (!ReadFile(dataHandle, Data, FileSize * 512, NULL, NULL)) fprintf(stderr, "ERROR READING\n");
+		fprintf(stderr, "%s\n", Data);
+
+		/* now write data to new location */
+		Location = Prev->start * 512;
+		SetFilePointer(dataHandle, Location, 0, FILE_BEGIN);
+		fprintf(stderr, "[+] New write location %f\n", Location);
+		WriteFile(dataHandle, Data, FileSize * 512, NULL, NULL);
+	}
+	else {
+		fprintf(stderr, "[+] Greater than 500MB, have to loop and use large buffer\n");
+		Data = malloc(512);		/* malloc space */
+		loop = (Next->end - Next->start) + 1;
+		int i;
+		for (i = 0; i < loop; i++) {
+			Location = (Next->start - 1) * 512;
+			SetFilePointer(dataHandle, Location + (512 * i), 0, FILE_BEGIN);
+			ReadFile(dataHandle, Data, 512, NULL, NULL);
+			Location = (Prev->start) * 512;
+			SetFilePointer(dataHandle, Location + (512 * i), 0, FILE_BEGIN);
+			WriteFile(dataHandle, Data, 512, NULL, NULL);
+		}
+	}
 	return 0;
 }
 
@@ -382,7 +458,7 @@ static int CleanupFileDirectory(LPCWSTR FileName)
 		
 		/* decrement entries, update the directory */
 		ENTRIES--;
-		block[0] = ENTRIES - '0';
+		block[0] = ENTRIES + '0';
 		int location = 10 + (i * 41);
 
 		for (i = 0; i < 41; i++) block[location + i] = '\0';
@@ -398,7 +474,7 @@ static int CleanupFileDirectory(LPCWSTR FileName)
 		
 		int j;
 		ENTRIES--;
-		block[0] = ENTRIES - '0';
+		block[0] = ENTRIES + '0';
 		int location = 10 + (i * 41);
 
 		/* deals with files not at the end */
@@ -406,13 +482,45 @@ static int CleanupFileDirectory(LPCWSTR FileName)
 		prev = HEAD;
 		for (j = 0; j < i - 1; j++) prev = prev->next;
 		fprintf(stderr, "[+] File just before removed file %s\n file after %s\n", prev->filename, next->filename);
+		prev->next = next;
+		
+		/* move files before updating directory here */
+		CleanupFileData(next, prev);
 
+		/* recalculate locations */
+		next->end = tmp->start + ((next->end - next->start));
+		next->start = tmp->start;
 
+		/* update the position in array */
+		next->number = next->number - 1;
+
+		fprintf(stderr, "[+] Updated info for %s\n\tstart %d\n\tend %d\n", next->filename, next->start, next->end);
+		CondenseDirectoryEntry(next);
+
+		/* deals with other files after next */
+		prev = next;
+		next = next->next;
+		while (next != NULL) {
+			CleanupFileData(next, prev);
+			/* update number in array */
+			next->number -= 1;
+			next->end = (prev->end + 1) + (next->end - next->start);
+			next->start = prev->end + 1;
+
+			/* use the number attribute to calculate where to place new file */
+			fprintf(stderr, "[+] File %s \tindex %d\n\tStart\t%d\n\tEnd\t%d\n", next->filename, next->number, next->start, next->end);
+			CondenseDirectoryEntry(next);
+			/* make call to move file data with new directory info */
+
+			prev = next;
+			next = next->next;
+		}
+
+		/* rewrite directory */
+		SetFilePointer(dataHandle, 0, 0, FILE_BEGIN);
+		if (!WriteFile(dataHandle, block, 512, NULL, NULL))
+			fprintf(stderr, "ERROR WRITING\n");
 	}
-
-
-	// TODO: Need to write the directory to the drive again here.
-
 	return 0;
 }
 
@@ -696,7 +804,6 @@ static VOID DOKAN_CALLBACK LFFSCleanup(LPCWSTR FileName, PDOKAN_FILE_INFO DokanF
 	if (DokanFileInfo->DeleteOnClose) {
 		fprintf(stderr, "[+] DeleteOnClose checked\n");
 		CleanupFileDirectory(FileName);
-		CleanupFileData(FileName);
 	}
 	DokanFileInfo->Context = NULL;
 }
@@ -721,7 +828,7 @@ static NTSTATUS DOKAN_CALLBACK LFFSFindStreams(LPWSTR FileName, PFillFindStreamD
 
 static NTSTATUS DOKAN_CALLBACK LFFSFindFiles(LPCWSTR FileName, PFillFindData ffd, PDOKAN_FILE_INFO DokanFileInfo)
 {
-	PWIN32_FIND_DATA findData = (PWIN32_FIND_DATA)malloc(sizeof(PWIN32_FIND_DATA));
+	PWIN32_FIND_DATA findData = (PWIN32_FIND_DATA)malloc(sizeof(PWIN32_FIND_DATA)); //breaks somehow...
 	struct entry *tmp;
 	wchar_t namebuf[64];
 	int i;
@@ -752,7 +859,7 @@ static NTSTATUS DOKAN_CALLBACK LFFSFindFiles(LPCWSTR FileName, PFillFindData ffd
 	}
 
 
-	free(findData);
+	free(findData); // Something is wrong here!!! No idea what at the moment, randomly breaks
 	fprintf(stderr, "AFter\n");
 	return STATUS_SUCCESS;
 }
@@ -896,6 +1003,7 @@ int main()
 	dokanOperations->FindFilesWithPattern = NULL;
 	dokanOperations->SetFileAttributesA = LFFSSetFileAttributes;
 	dokanOperations->GetDiskFreeSpaceA = LFFSGetDiskFreeSpace;
+
 	dokanOperations->GetFileSecurityA = LFFSGetFileSecurity;
 	dokanOperations->FindFilesWithPattern = LFFSFindFilesWithPattern;
 	dokanOperations->SetAllocationSize = LFFSSetAllocationSize;
